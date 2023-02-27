@@ -1,0 +1,720 @@
+---
+title: "Age of Return"
+subtitle: "Markdown for Covariate Data"
+author: "Caitlin O'Brien"
+date: "1/20/2023"
+output:
+  rmarkdown::html_document:
+    theme: cosmo
+    toc: TRUE
+    toc_float: FALSE
+    code_folding: hide
+---
+
+
+```{r, warning=FALSE, message=FALSE, error=FALSE, class.source='fold-show'}
+#Packages
+library(tidyverse)
+library(here)
+library(data.table)
+library(zoo)
+```
+
+# {.tabset}
+
+## Basefile
+
+
+**Year Joins used:**
+
+[Shared googlesheet list of joins](https://docs.google.com/spreadsheets/d/1SJ3gYAqOGeecirm4OECOcIXv3z6DvwcpU4EPKHBCpVM/edit#gid=0)
+
+- smolt migration year (smolt) = year of detection at LGR
+- adult detection (ADU_first) = return detection at first dam (BON > MCN > ICH > LGR)
+- water year (WY) = Oct to Dec of previous calendar year plus Jan to Sept of the current calendar year
+- migration year (MY) = used for year prior to entry and year of entry. Includes April to December of previous calendar year plus Jan to March of current calendar year. 
+
+Updated codes:
+
+
+
+### Data wrangling:
+
+#### FOR ORIGINAL DATA SET
+```{r,warning=FALSE, message=FALSE, error=FALSE}
+d<-read_csv(here("data", "data_adults.csv"))
+
+
+#extract smolt migration year (smolt), smolt_year prior = smolt+1, first adult detection, then separate by month and year
+#filter to include data within time frame, size, and rkm
+
+d<-d %>% 
+  mutate(pass_type_T_R = dplyr::recode(pass_type_T_R, "TB" = "ROR", "RORBD" = "ROR")) %>% 
+  filter(length < 155, #length threshold. Note: leaving in animals less than 55 mm
+         juv_lgr_first > '1998-01-01 00:00:00' & juv_lgr_first < '2018-12-31 24:00:00', #set time frame
+         rel_rkm >= 522.173) %>% #removes lower tucannon singleton data point--confirm
+   mutate(smolt_year = as.character(lubridate::year(juv_lgr_first))) %>% 
+  mutate(smolt_entry =as.character(lubridate::year(juv_lgr_first)+1) ) %>% #for entry in new WY
+   mutate(adu_first = if_else(!is.na(adu_bon_first) , adu_bon_first , if_else(!is.na(adu_mcn_first),adu_mcn_first,if_else(!is.na(adu_ich_first),adu_ich_first,adu_lgr_first)))) %>%
+  mutate(adult_year = as.character(lubridate::year(adu_first))) %>% 
+  mutate( smolt_DOY = as.character(lubridate::yday(juv_lgr_first)))
+```
+
+
+#### FOR UPDATED DATA SET
+```{r}
+d<-read_csv(here("data", "updated_data_adults.csv")) #subset from MC's new data submitted (2.14.23)
+
+d <- d %>% 
+  filter(t_rear_type == "W") %>% 
+  mutate(smolt_entry =as.character(lubridate::year(juv_lgr_first)+1)) %>%  #for table join: entry in new WY
+  mutate(adult_year = as.character(adult_year),
+         adult_month = as.character(adult_month), 
+         adult_DOY = as.character(adult_DOY),
+         smolt_year = as.character(smolt_year), 
+         smolt_month = as.character(smolt_month), 
+         smolt_DOY = as.character(smolt_DOY)
+         ) %>% 
+  mutate(BY = as.integer(smolt_year)-1) %>% 
+  mutate(BY = as.character(BY))
+
+
+#paired down file to join covariates
+d.cov <- d %>% 
+  select("tag_id" , "t_run", "t_rear_type", "length", "smolt_year","smolt_entry", "BY", "adult_year", "smolt_DOY", "locgrp", "years_diff", "OceanAge", "pass_type_T_R")
+```
+
+
+### Visualize
+```{r,warning=FALSE, message=FALSE, error=FALSE, fig.show="hold", out.width="50%"}
+
+sum.sm<-d%>% 
+  group_by(smolt_month) %>% 
+  summarize(sum = n())
+
+plot(sum.sm$smolt_month, sum.sm$sum, type="b")
+
+sum.am<-d %>% 
+  group_by(adult_month) %>% 
+  summarize(sum = n())
+
+plot(sum.am$adult_month, sum.am$sum, type="b") # Filter by months?
+```
+
+
+
+## A.	Large-scale Ocean/climate indices 
+
+
+
+### **1.	NPGO (North Pacific Gyre Oscillation) index**
+
+*	Mean of ONDJFM of first fall/winter of ocean entry
+    + SMY+1:WY --> updated with JG code BY:WY
+-	Mean of ONDJFM of last fall/winter in ocean before adult return 
+    + ADU:WY
+
+```{r}
+NPGO.data <- read_csv(here("Data", "NPGO 1990-2022.csv"))
+
+NPGO<- NPGO.data %>% 
+  filter( month %in% c(10:12, 1:3)) %>%
+  mutate( wateryear = ifelse(month %in% c(1:9), year, year+1)) %>% 
+  group_by(wateryear) %>% 
+  summarize( meanONDJFM = round(mean(NPGO),3)) %>% 
+  mutate(wateryear = as.character(wateryear))
+```
+
+
+```{r eval=FALSE, include=FALSE}
+
+###original code--use Jenn's, see below
+#Mean of ONDJFM of first fall/winter of ocean entry
+#Add mean for first year entry to basefile
+d.cov<- d.cov%>% 
+  inner_join(NPGO, by = c("smolt_entry" = "wateryear")) %>% 
+  rename(meanNPGO_ONDJFM_smoltentry = meanONDJFM)
+
+##Mean of ONDJFM of last fall/winter in ocean before adult return 
+##Add mean for last fall/winter before adult return to basefile
+d.cov<- d.cov %>% 
+  inner_join(NPGO, by = c("adult_year" = "wateryear")) %>% 
+  rename(meanNPGO_ONDJFM_adu = meanONDJFM)
+
+
+d.cov %>% 
+  select("smolt_year", "smolt_entry", "adult_year","meanNPGO_ONDJFM_smoltentry", "meanNPGO_ONDJFM_adu") %>% 
+  head(.,10)
+```
+
+```{r}
+
+#NPGO, Ocean conditions setup prior to smolt ocean entry, therefore in BY of spring/summer Chinook smolts=
+#Mean of ONDJFM of first fall/winter of ocean entry
+d.cov<- d.cov%>% 
+  inner_join(NPGO, by = c("smolt_year" = "wateryear")) %>% 
+  rename(NPGO.ONDJFM.0 = meanONDJFM)
+
+##Mean of ONDJFM of last fall/winter in ocean before adult return 
+d.cov<- d.cov %>% 
+  inner_join(NPGO, by = c("adult_year" = "wateryear")) %>% 
+  rename(NPGO.ONDJFM.T = meanONDJFM)
+
+
+d.cov %>% 
+  select("smolt_year", "adult_year","NPGO.ONDJFM.0", "NPGO.ONDJFM.T") %>% 
+  head(.,10)
+
+```
+
+
+
+### **2.	PDO (Pacific Decadal Oscillation) index**
+
+-	Monthly data
+-	Mean of AMJJAS of spring/summer in year of ocean entry
+    + smolt:WY --> changed to BY:WY
+-	Mean of ONDJFM of first fall/winter in ocean --> changed to fall/winter prior to smolt ocean entry
+    + smolt+1:WY --> chnaged to smolt : WY
+-	Mean of ONDJFM of last fall/winter in ocean before adult return
+    + ADU:WY
+
+```{r}
+ERSST.v5.PDO <- fread("https://www.ncei.noaa.gov/pub/data/cmb/ersst/v5/index/ersst.v5.pdo.dat")
+
+PDO<- ERSST.v5.PDO %>% 
+  pivot_longer(cols = c(2:13),
+               names_to = "month",
+               values_to = "PDO") %>% 
+  mutate(month = match(month,month.abb)) %>% 
+  mutate( wateryear = ifelse(month %in% c(1:9), Year, (Year+1))) 
+
+#Mean of ONDJFM of first fall/winter in ocean
+PDO.ONDJFM<- PDO%>% 
+  filter(month %in% c(1:3,10:12)) %>% 
+  group_by(wateryear) %>% 
+  summarize( meanPDO= round(mean(PDO),3)) %>% 
+  mutate(wateryear = as.character(wateryear))
+
+#Mean of AMJJAS of spring/summer in year of ocean entry
+PDO.AMJJAS <- PDO %>% 
+  filter(month %in% c(4:9)) %>% 
+  group_by(wateryear) %>% 
+  summarize( meanPDO= round(mean(PDO),3)) %>% 
+  mutate(wateryear = as.character(wateryear))
+  
+```
+
+old
+```{r eval=FALSE, include=FALSE}
+#Mean of AMJJAS of spring/summer in year of ocean entry 
+d.cov<- d.cov %>% 
+  inner_join(PDO.AMJJAS, by = c("smolt_year" = "wateryear")) %>% 
+  rename(PDO.AMJJAS.1 = meanPDO)
+
+#Mean of ONDJFM of first fall/winter in ocean
+
+d.cov<- d.cov %>% 
+  inner_join(PDO.ONDJFM, by = c("smolt_entry" = "wateryear")) %>% 
+  rename(PDO.ONDJFM. = meanPDO)
+
+#Mean of ONDJFM of last fall/winter in ocean before adult return
+d.cov<- d.cov %>% 
+  inner_join(PDO.ONDJFM, by = c("adult_year" = "wateryear")) %>% 
+  rename(meanPDO_ONDJFM_adu = meanPDO)
+
+d.cov %>% 
+  select("smolt_year", "smolt_entry","adult_year","meanPDO_AMJJAS_smolt", "meanPDO_ONDJFM_smoltentry", "meanPDO_ONDJFM_adu") %>% 
+  head(.,10)
+
+```
+updated 
+```{r}
+#Mean of AMJJAS of spring/summer in year of ocean entry 
+d.cov<- d.cov %>% 
+  inner_join(PDO.AMJJAS, by = c("BY" = "wateryear")) %>% 
+  rename(PDO.AMJJAS.1 = meanPDO)
+
+#Mean of ONDJFM of first fall/winter in ocean //changed to// fall/winter prior to smolt ocean entry
+
+d.cov<- d.cov %>% 
+  inner_join(PDO.ONDJFM, by = c("smolt_year" = "wateryear")) %>% 
+  rename(PDO.ONDJFM.0 = meanPDO)
+
+#Mean of ONDJFM of last fall/winter in ocean before adult return
+d.cov<- d.cov %>% 
+  inner_join(PDO.ONDJFM, by = c("adult_year" = "wateryear")) %>% 
+  rename(PDO.ONDJFM.T = meanPDO)
+
+d.cov %>% 
+  select("smolt_year", "BY","adult_year","PDO.AMJJAS.1", "PDO.ONDJFM.0", "PDO.ONDJFM.T") %>% 
+  head(.,10)
+
+```
+
+
+### **3.	SSTarc data**
+-	File: File on local drive until data is released -> ersstArc.csv (see shared dropbox)
+
+Could try similar to PDO covariates:
+
+  - Mean of AMJJAS of spring/summer in year of ocean entry
+    + smolt:WY
+  - Mean of ONDJFM of first fall/winter in ocean 
+    + smolt+1:WY
+  - Mean of ONDJFM of last fall/winter in ocean before adult return
+    + ADU:WY
+
+
+
+```{r, warning=FALSE, message=FALSE, error=FALSE}
+SSTarc<-read_csv(here("data", "ersstArc.csv")) # select ersstArc.csv in shared dropbox
+
+SSTarc.AMJJAS<-SSTarc %>% 
+  mutate( wateryear = ifelse(month %in% c(1:9), year, (year+1))) %>% 
+  filter(month %in% c(4:9)) %>% 
+  group_by(wateryear) %>% 
+  summarize( meanSSTarc= round(mean(sstarc),3)) %>% 
+  mutate(wateryear = as.character(wateryear))
+
+SSTarc.ONDJFM<-SSTarc %>% 
+  mutate( wateryear = ifelse(month %in% c(1:9), year, (year+1))) %>% 
+  filter(month %in% c(1:3,10:12)) %>% 
+  group_by(wateryear) %>% 
+  summarize( meanSSTarc= round(mean(sstarc),3)) %>% 
+  mutate(wateryear = as.character(wateryear))
+
+```
+
+```{r}
+
+#Mean of AMJJAS of spring/summer in year of ocean entry 
+d.cov<- d.cov %>% 
+  inner_join(SSTarc.AMJJAS, by = c("smolt_year" = "wateryear")) %>% 
+  rename(meanSSTarc_AMJJAS_smolt = meanSSTarc)
+
+#Mean of ONDJFM of first fall/winter in ocean
+
+d.cov<- d.cov %>% 
+  inner_join(SSTarc.ONDJFM, by = c("smolt_entry" = "wateryear")) %>% 
+  rename(meanSSTarc_ONDJFM_smoltentry = meanSSTarc)
+
+#Mean of ONDJFM of last fall/winter in ocean before adult return
+d.cov<- d.cov %>% 
+  inner_join(SSTarc.ONDJFM, by = c("adult_year" = "wateryear")) %>% 
+  rename(meanSSTarc_ONDJFM_adu = meanSSTarc)
+
+d.cov %>% 
+  select("smolt_year", "smolt_entry","adult_year","meanSSTarc_AMJJAS_smolt", "meanSSTarc_ONDJFM_smoltentry", "meanSSTarc_ONDJFM_adu") %>% 
+  head(.,10)
+
+```
+
+### **4.	AL (Aleutian Low) index**
+
+-	Download monthly data
+-	Mean of ONDJFM of first fall/winter in ocean
+    + smolt+1 : WY
+-	Mean of ONDJFM of fall/winter prior to ocean entry
+    + smolt:WY
+-	Mean of ONDJFM of last fall/winter in ocean before adult return
+    + ADU:WY
+-	More info & to download data https://psl.noaa.gov/data/timeseries/ALBSA/ 
+
+
+```{r, warning=FALSE, message=FALSE, error=FALSE}
+
+AL<-fread("https://psl.noaa.gov/data/timeseries/monthly/data/albsa.ncepr1.data", header = FALSE )
+colnames(AL)<-c("year",paste0(1:12))
+
+
+AL<-AL %>% 
+  pivot_longer(cols = c(2:13),
+               names_to = "month",
+               values_to = "AL") %>% 
+  mutate(month = as.integer(month)) %>% 
+  mutate( wateryear = ifelse(month %in% c(1:9), year, (year+1))) %>% 
+  filter(month %in% c(1:3,10:12)) %>% 
+  group_by(wateryear) %>% 
+  summarise(meanAL = mean(AL)) %>% 
+  mutate(wateryear = as.character(wateryear))
+  
+
+```
+
+```{r}
+
+#Mean of ONDJFM of fall/winter prior to ocean entry 
+d.cov<- d.cov%>% 
+  inner_join(AL, by = c("smolt_year" = "wateryear")) %>% 
+  rename(meanAL_ONDJFM_smolt = "meanAL") 
+
+#Mean of ONDJFM of first fall/winter in ocean
+d.cov<- d.cov%>% 
+  inner_join(AL, by = c("smolt_entry" = "wateryear")) %>% 
+  rename(meanAL_ONDJFM_smoltentry = "meanAL") 
+
+
+#Mean of ONDJFM of last fall/winter in ocean before adult return
+d.cov<- d.cov %>% 
+  inner_join(AL, by = c("adult_year" = "wateryear")) %>% 
+  rename(meanAL_ONDJFM_adu = "meanAL") 
+
+d.cov %>% 
+  select("smolt_year", "smolt_entry","adult_year","meanAL_ONDJFM_smolt", "meanAL_ONDJFM_smoltentry", "meanAL_ONDJFM_adu") %>% 
+  head(.,10)
+```
+
+
+
+### **5.	ENSO 3.4**
+
+-	Download monthly data
+-	Mean of year prior to ocean entry
+    + ?
+    + currently using smolt:MY
+-	Mean of MJJAS of year of ocean entry
+    + smolt:WY
+-	Mean of DJF of first winter in ocean
+    + smolt+1:WY
+-	Mean of DJF of last winter in ocean before adult return
+    + ADU:WY
+-	More info & to download data https://climatedataguide.ucar.edu/climate-data/nino-sst-indices-nino-12-3-34-4-oni-and-tni 
+
+```{r, warning=FALSE, message=FALSE, error=FALSE}
+ENSO<-fread("http://www.esrl.noaa.gov/psd/data/correlation/nina34.data", header = FALSE )
+colnames(ENSO)<-c("year",paste0(1:12))
+
+#summarize by mean ENSO per year
+ENSO.year<-ENSO %>% 
+  pivot_longer(cols = c(2:13),
+               names_to = "month",
+               values_to = "ENSO") %>% 
+  mutate(month = as.integer(month)) %>% 
+  mutate( MY = ifelse(month %in% c(1:3), year, (year+1))) %>% #A:D of current year plus J:M of upcoming year = MY
+  group_by(MY) %>% 
+  summarise(meanENSO = mean(ENSO)) %>% 
+  mutate(MY = as.character(MY))
+
+
+#summarize by DJF
+ENSO.DJF<-ENSO %>% 
+  pivot_longer(cols = c(2:13),
+               names_to = "month",
+               values_to = "ENSO") %>% 
+  mutate(month = as.integer(month)) %>% 
+  mutate( wateryear = ifelse(month %in% c(1:9), year, (year+1))) %>% 
+  filter(month %in% c(1,2,12)) %>% 
+  group_by(wateryear) %>% 
+  summarise(meanENSO = mean(ENSO)) %>% 
+  mutate(wateryear = as.character(wateryear))
+
+#summarize by MJJAS
+ENSO.MJJAS<-ENSO %>% 
+  pivot_longer(cols = c(2:13),
+               names_to = "month",
+               values_to = "ENSO") %>% 
+  mutate(month = as.integer(month)) %>% 
+  mutate( wateryear = ifelse(month %in% c(1:9), year, (year+1))) %>% 
+  filter(month %in% c(5:9)) %>% 
+  group_by(wateryear) %>% 
+  summarise(meanENSO = mean(ENSO)) %>% 
+  mutate(wateryear = as.character(wateryear))
+```
+
+
+```{r}
+#Mean of year prior to ocean entry (doublecheck, using April to March as 'year prior')
+d.cov<- d.cov%>% 
+  inner_join(ENSO.year, by = c("smolt_year" = "MY")) %>% 
+  rename(meanENSO_smolt = "meanENSO") 
+
+#Mean of MJJAS of year of ocean entry 
+
+d.cov<- d.cov%>% 
+  inner_join(ENSO.MJJAS, by = c("smolt_year" = "wateryear")) %>% 
+  rename(meanENSO_MJJAS_smolt = "meanENSO") 
+
+#Mean of DJF of first winter in ocean
+d.cov<- d.cov%>% 
+  inner_join(ENSO.DJF, by = c("smolt_entry" = "wateryear")) %>% 
+  rename(meanENSO_DJF_smoltentry = "meanENSO") 
+
+#Mean of DJF of last winter in ocean before adult return
+d.cov<- d.cov %>% 
+  inner_join(ENSO.DJF, by = c("adult_year" = "wateryear")) %>% 
+  rename(meanENSO_DJF_adu = "meanENSO") 
+
+d.cov %>% 
+  select("smolt_year", "smolt_entry","adult_year","meanENSO_smolt", "meanENSO_MJJAS_smolt", "meanENSO_DJF_smoltentry", "meanENSO_DJF_adu") %>% 
+  head(.,10)
+```
+
+
+
+
+
+## B.	Coastal/local indices
+
+### **1.	CUTI**
+
+-	Annual index
+-	Year of ocean entry
+    + ? 
+    + currently using smolt:MY
+-	More info & to download data  https://mjacox.com/upwelling-indices/ 
++ selected 47N as the northmost location of CUTI/BEUTI versus 46N due to SRSC
+
+```{r}
+CUTI<-fread("https://www.mjacox.com/wp-content/uploads/2023/01/CUTI_monthly.csv")
+
+CUTI<- CUTI %>% 
+  select(1, 2,19) %>% 
+  mutate( MY = ifelse(month %in% c(1:3), year, (year+1))) %>%  #using April to March for MY
+  rename(CUTI = 3) %>% 
+   group_by(MY) %>% 
+  summarise(meanCUTI= round(mean(CUTI),3)) %>%  #get mean of 47N location across months per year
+  mutate(MY = as.character(MY))
+```
+
+```{r}
+#Mean of year of ocean entry
+d.cov<- d.cov%>% 
+  inner_join(CUTI, by = c("smolt_year" = "MY")) %>% 
+  rename(meanCUTI_smolt = "meanCUTI") 
+
+d.cov %>% 
+  select("smolt_year", "meanCUTI_smolt") %>% 
+  head(.,10)
+```
+
+
+
+### **2.	BEUTI**
+
+-	Annual index
+-	Year of ocean entry
+    + ? 
+    + currently using smolt:MY
+-	More info & to download data https://mjacox.com/upwelling-indices/ 
+
+```{r}
+BEUTI<-fread("https://www.mjacox.com/wp-content/uploads/2023/01/BEUTI_monthly.csv")
+
+BEUTI<- BEUTI %>% 
+  select(1, 2,19) %>% #selecting location 47N only
+  mutate( MY = ifelse(month %in% c(1:3), year, (year+1))) %>%  #using April to March for MY
+  rename(BEUTI = 3) %>% 
+   group_by(MY) %>% 
+  summarise(meanBEUTI= round(mean(BEUTI),3)) %>%  #mean of 47N location across months per year
+  mutate(MY = as.character(MY))
+```
+
+```{r}
+#Mean of year of ocean entry
+d.cov<- d.cov%>% 
+  inner_join(BEUTI, by = c("smolt_year" = "MY")) %>% 
+  rename(meanBEUTI_smolt = "meanBEUTI") 
+
+d.cov %>% 
+  select("smolt_year", "meanBEUTI_smolt") %>% 
+  head(.,10)
+```
+
+
+
+
+## C.	Regional freshwater indices
+
+### **1.	PNI (Pacific Northwest Index)**
+
+-	Annual index
+- Mean of year of ocean entry
+    + ? smolt:CY
+-	More info & to retrieve data https://www.cbr.washington.edu/status/pni 
+*	Use the DFA-derived index (left-most column); this index may need revising
+
+
+```{r, warning=FALSE, message=FALSE, error=FALSE}
+PNI<- read_csv(here("data", "PNI2021.csv"), skip=1)
+
+PNI<-PNI %>% 
+  select(1, 2) %>% 
+  rename(year = 1, PNI = 2) %>% 
+  mutate(year = as.character(year))
+```
+
+```{r}
+#Mean of year of ocean entry
+d.cov<- d.cov%>% 
+  inner_join(PNI, by = c("smolt_year" = "year")) %>% 
+  rename(meanPNI_smolt = "PNI") 
+
+d.cov %>% 
+  select("smolt_year", "meanPNI_smolt") %>% 
+  head(.,10)
+```
+
+
+### **2.	Snow-water-equivalent data from SNOTEL**
+
+Data online
+
+-	Annual index
+- Mean of year of ocean entry
+    + ? smolt:CY (confirm data was aggregated by CY and not WY)
+-	File: swepeak.wnb2021.csv (in Dropbox)
+-	Use yearly meanSWE data
+
+
+```{r, warning=FALSE, message=FALSE, error=FALSE}
+SWE<-read_csv(here("data", "swepeak.wnb2021.csv"))
+
+SWE<-SWE %>% 
+  select(1, 7) %>% 
+  mutate(year = as.character(year))
+```
+
+```{r}
+#Mean of year of ocean entry
+d.cov<- d.cov%>% 
+  inner_join(SWE, by = c("smolt_year" = "year")) %>% 
+  rename(meanSWE_smolt = "meanSWE") 
+
+d.cov %>% 
+  select("smolt_year", "meanSWE_smolt") %>% 
+  head(.,10)
+d.cov
+```
+
+
+
+
+
+
+## D.	Local freshwater indices
+
+### **LGR all indices:**
++ smolt, DOY : CY, DOY 
+
+**1.	LGR WQM river temperature**
+
+-	Daily data
+-	Calculate a 7-d running mean, right-aligned to LGR passage date (i.e., 7th day of the mean is the day the fish passed LGR)
+
+**2.	LGR flow**
+
+-	Daily data
+-	Calculate a 7-d running mean, right-aligned to LGR passage date
+
+**3.	LGR % spill**
+
+-	Daily data
+-	Calculate a 7-d running mean, right-aligned to LGR passage date
+
+**4.	LGR % TDG**
+
+-	Daily data
+-	Calculate a 7-d running mean, right-aligned to LGR passage date
+
+```{r, warning=FALSE, message=FALSE, error=FALSE}
+LGR<-fread("https://www.cbr.washington.edu/dart/cs/php/rpt/mg.php?sc=1&mgconfig=river&outputFormat=csv&year%5B%5D=2022&year%5B%5D=2021&year%5B%5D=2020&year%5B%5D=2019&year%5B%5D=2018&year%5B%5D=2017&year%5B%5D=2016&year%5B%5D=2015&year%5B%5D=2014&year%5B%5D=2013&year%5B%5D=2012&year%5B%5D=2011&year%5B%5D=2010&year%5B%5D=2009&year%5B%5D=2008&year%5B%5D=2007&year%5B%5D=2006&year%5B%5D=2005&year%5B%5D=2004&year%5B%5D=2003&year%5B%5D=2002&year%5B%5D=2001&year%5B%5D=2000&year%5B%5D=1999&year%5B%5D=1998&loc%5B%5D=LWG&data%5B%5D=Dissolved+Gas+Percent&data%5B%5D=Outflow&data%5B%5D=Spill+Percent&data%5B%5D=Temp+%28WQM%29&startdate=1%2F1&enddate=12%2F31&avgyear=0&consolidate=1&grid=1&y1min=0&y1max=&y2min=&y2max=&size=medium")
+
+LGR.rmean<-LGR %>% 
+  #mutate(across(everything(), ~ifelse(.=="", NA, as.character(.)))) %>% 
+    pivot_longer(cols = c(2:101),
+               names_to = "ID",
+               values_to = "value") %>% 
+  separate(ID, c('year', 'LGR', 'ID')) %>% 
+    pivot_wider(names_from = "ID",
+             values_from = "value") %>% 
+  mutate_at(c("gaspct", "outflow", "spillpct", "tempc"), as.numeric)  %>% 
+  separate(1, c('mm',"dd")) %>% 
+  mutate(mm = as.numeric (mm),
+         year = as.numeric(year), 
+         dd = as.numeric(dd)) %>% 
+arrange(year) %>% #sort data to use rollmean
+  group_by(year) %>% 
+  mutate(TDG_7d = rollmean(gaspct, k=7, fill=NA, align = "right"), #check rollmean v rollapply for handling NAs
+         Flow_7d = rollmean(outflow, k=7, fill=NA, align = "right"),
+            Spill_7d = rollmean(spillpct, k=7, fill=NA, align = "right"),
+           Temp_7d = rollmean(tempc, k=7, fill=NA, align = "right")) %>% 
+  mutate(YMD = lubridate::ymd(paste(year,mm,dd, sep ="-"))) %>% 
+   mutate( DOY = lubridate::yday(YMD)) %>% 
+  select("year", "DOY", "TDG_7d", "Flow_7d","Spill_7d", "Temp_7d") %>% 
+   mutate(year = as.character(year),
+          DOY = as.character(DOY))
+
+
+#need to add centering and scaling?
+```
+
+```{r}
+
+###join by year and doy fish passed LGR
+d.cov <- d.cov %>% 
+  inner_join(LGR.rmean, by = c("smolt_year" = "year", "smolt_DOY" = "DOY"))  
+
+
+d.cov %>% 
+  select("smolt_year", "smolt_DOY", "TDG_7d", "Flow_7d","Spill_7d", "Temp_7d") %>% 
+  head(., 10) #Need to look into NA's---replace with previous average?
+```
+
+
+
+
+## E.	Fish covariates: 
+
+(determined from PTAGIS data set)
+
+**1.	LGR passage timing**
+
+ + smolt_DOY
+
+**2.	Release location groupings (an index of Major Population Group?)**
+
+-	Method TBD
+
+- To use HUC6
+```{r}
+#add HUC8 to missing rel_huc:
+df$rel_huc[df$rel_site == "SNAKE3" & is.na(df$rel_huc)]<-"17060103"
+#SNAKE3	Snake River - Clearwater River to Salmon River (km 224-303)	17060103	Lower Snake-Asotin	Lower Snake	522; snake river trap @ 522.225
+df$rel_huc[df$rel_site == "GRANDR" & is.na(df$rel_huc)]<-"17060106"
+#GRNTRP	Grande Ronde River Trap	17060106	Lower Grande Ronde	Lower Snake	522.271.002
+
+
+#add deliminator
+df$split<-gsub("(\\d{2})$",",\\1",df$rel_huc)
+
+#separate
+df<-separate(df, split, into = c("HUC6", "HUC8")) 
+
+#rename at basin level
+df<-df %>% 
+  mutate(basin = case_when(HUC6 == "170601" ~ "Lower Snake", 
+                   HUC6 == "170602" ~ "Salmon", 
+                   HUC6 == "170603" ~ "Clearwater"))
+```
+
+
+**3.	Above LGR vs At LGR groupings**
+
+- To use at/above LGR see column `locgrp`
+
+**4.	Transported vs in-river passage type**
+
++ relabelled all to either T or ROR
+
+**5.	Smolt fork length**
+
+*filtered >155 mm, keeping smaller than 55 mm but >25 mm for now. 
+
+
+
+## Save file
+```{r}
+write.csv(d.cov, file=here("data", "covariate_data_age.csv"), row.names = FALSE)
+```
+
